@@ -15,7 +15,12 @@ function App() {
     redPieces,
     blackPieces,
     handleCellClick,
-    resetGame
+    resetGame,
+    aiEnabled,
+    aiDifficulty,
+    aiThinking,
+    toggleAI,
+    setDifficulty
   } = useCheckers();
 
   return (
@@ -26,6 +31,11 @@ function App() {
         redPieces={redPieces}
         blackPieces={blackPieces}
         onNewGame={resetGame}
+        aiEnabled={aiEnabled}
+        aiDifficulty={aiDifficulty}
+        aiThinking={aiThinking}
+        onToggleAI={toggleAI}
+        onSetDifficulty={setDifficulty}
       />
       <div className="game-container">
         <Board

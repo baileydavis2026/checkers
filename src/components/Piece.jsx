@@ -1,8 +1,9 @@
 import './Piece.css';
 
-const Piece = ({ type }) => {
-  const isKing = type.includes('king');
-  const color = type.includes('red') ? 'red' : 'black';
+const Piece = ({ piece }) => {
+  if (!piece) return null;
+  
+  const { color, isKing } = piece;
 
   return (
     <div className={`piece ${color}`}>

@@ -17,7 +17,7 @@ const Cell = ({
       className={`cell ${isDark ? 'dark' : 'light'} ${isSelected ? 'selected' : ''} ${isValidMove ? 'valid-move' : ''} ${isJumpMove ? 'jump-move' : ''}`}
       onClick={onClick}
     >
-      {piece && <Piece type={piece} />}
+      {piece && <Piece piece={piece} />}
       {isValidMove && !piece && (
         <div className={`move-indicator ${isJumpMove ? 'jump' : ''}`} />
       )}

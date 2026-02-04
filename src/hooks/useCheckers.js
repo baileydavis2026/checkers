@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { getBestMove } from '../ai/checkerAI';
 
 // Constants
 const EMPTY = null;
@@ -15,7 +16,7 @@ const createInitialBoard = () => {
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 8; col++) {
       if ((row + col) % 2 === 1) {
-        board[row][col] = BLACK;
+        board[row][col] = { color: BLACK, isKing: false };
       }
     }
   }
@@ -24,7 +25,7 @@ const createInitialBoard = () => {
   for (let row = 5; row < 8; row++) {
     for (let col = 0; col < 8; col++) {
       if ((row + col) % 2 === 1) {
-        board[row][col] = RED;
+        board[row][col] = { color: RED, isKing: false };
       }
     }
   }
@@ -35,13 +36,8 @@ const createInitialBoard = () => {
 // Check if a piece belongs to a player
 const belongsTo = (piece, player) => {
   if (!piece) return false;
-  if (player === RED) return piece === RED || piece === RED_KING;
-  if (player === BLACK) return piece === BLACK || piece === BLACK_KING;
-  return false;
+  return piece.color === player;
 };
-
-// Check if a piece is a king
-const isKing = (piece) => piece === RED_KING || piece === BLACK_KING;
 
 // Get the opponent
 const getOpponent = (player) => (player === RED ? BLACK : RED);
@@ -56,7 +52,7 @@ const getPossibleMoves = (board, row, col, player, mustJump = false) => {
 
   const moves = [];
   const jumps = [];
-  const pieceIsKing = isKing(piece);
+  const pieceIsKing = piece.isKing;
 
   // Determine movement directions
   const directions = [];
@@ -76,7 +72,7 @@ const getPossibleMoves = (board, row, col, player, mustJump = false) => {
       if (board[newRow][newCol] === EMPTY && !mustJump) {
         // Simple move
         moves.push({ toRow: newRow, toCol: newCol, isJump: false });
-      } else if (belongsTo(board[newRow][newCol], getOpponent(player))) {
+      } else if (board[newRow][newCol] && belongsTo(board[newRow][newCol], getOpponent(player))) {
         // Potential jump
         const jumpRow = newRow + dRow;
         const jumpCol = newCol + dCol;
@@ -131,13 +127,53 @@ const getAllValidMoves = (board, player) => {
   return allMoves;
 };
 
+// Get valid moves for AI (different format)
+const getValidMovesForPieceAI = (board, row, col, mustCapture) => {
+  const piece = board[row][col];
+  if (!piece) return [];
+  
+  const player = piece.color;
+  const moves = [];
+  const pieceIsKing = piece.isKing;
+
+  const directions = [];
+  if (player === RED || pieceIsKing) {
+    directions.push([-1, -1], [-1, 1]);
+  }
+  if (player === BLACK || pieceIsKing) {
+    directions.push([1, -1], [1, 1]);
+  }
+
+  for (const [dRow, dCol] of directions) {
+    const newRow = row + dRow;
+    const newCol = col + dCol;
+
+    if (isValidPosition(newRow, newCol)) {
+      if (!mustCapture && board[newRow][newCol] === null) {
+        moves.push({ row: newRow, col: newCol });
+      } else if (board[newRow][newCol] && board[newRow][newCol].color !== player) {
+        const jumpRow = newRow + dRow;
+        const jumpCol = newCol + dCol;
+        if (isValidPosition(jumpRow, jumpCol) && board[jumpRow][jumpCol] === null) {
+          moves.push({ row: jumpRow, col: jumpCol });
+        }
+      }
+    }
+  }
+
+  return moves;
+};
+
+// Check if player has captures available (for AI)
+const hasCapturesAI = (board, player) => hasAnyJump(board, player);
+
 // Check for additional jumps after a jump
 const getAdditionalJumps = (board, row, col, player) => {
   const piece = board[row][col];
   if (!piece) return [];
 
   const jumps = [];
-  const pieceIsKing = isKing(piece);
+  const pieceIsKing = piece.isKing;
 
   const directions = [];
   if (player === RED || pieceIsKing) {
@@ -155,6 +191,7 @@ const getAdditionalJumps = (board, row, col, player) => {
 
     if (
       isValidPosition(jumpRow, jumpCol) &&
+      board[midRow][midCol] &&
       belongsTo(board[midRow][midCol], getOpponent(player)) &&
       board[jumpRow][jumpCol] === EMPTY
     ) {
@@ -184,10 +221,16 @@ export const useCheckers = () => {
   const [selectedPiece, setSelectedPiece] = useState(null);
   const [validMoves, setValidMoves] = useState([]);
   const [moveHistory, setMoveHistory] = useState([]);
-  const [gameStatus, setGameStatus] = useState('playing'); // 'playing', 'red-wins', 'black-wins', 'draw'
+  const [gameStatus, setGameStatus] = useState('playing');
   const [jumpInProgress, setJumpInProgress] = useState(null);
   const [redPieces, setRedPieces] = useState(12);
   const [blackPieces, setBlackPieces] = useState(12);
+  
+  // AI settings
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [aiDifficulty, setAiDifficulty] = useState('MEDIUM');
+  const [aiThinking, setAiThinking] = useState(false);
+  const aiTimeoutRef = useRef(null);
 
   // Check for game end conditions
   const checkGameEnd = useCallback((newBoard, nextPlayer) => {
@@ -214,7 +257,6 @@ export const useCheckers = () => {
       return true;
     }
     if (moves.length === 0) {
-      // Current player can't move - they lose
       setGameStatus(nextPlayer === RED ? 'black-wins' : 'red-wins');
       return true;
     }
@@ -222,13 +264,118 @@ export const useCheckers = () => {
     return false;
   }, []);
 
+  // Execute AI move
+  const executeAIMove = useCallback((currentBoard, player) => {
+    setAiThinking(true);
+    
+    // Add slight delay for better UX
+    aiTimeoutRef.current = setTimeout(() => {
+      const aiMove = getBestMove(
+        currentBoard,
+        player,
+        aiDifficulty,
+        getValidMovesForPieceAI,
+        hasCapturesAI
+      );
+      
+      if (!aiMove) {
+        setAiThinking(false);
+        return;
+      }
+
+      let newBoard = currentBoard.map(r => r.map(c => c ? { ...c } : null));
+      const { from, to } = aiMove;
+      let piece = { ...newBoard[from.row][from.col] };
+      
+      // Build move notation
+      let notation = toNotation(from.row, from.col);
+      let currentPos = { row: to.row, col: to.col };
+      
+      // Execute the move
+      newBoard[from.row][from.col] = null;
+      
+      // Handle capture
+      if (aiMove.isCapture) {
+        const capturedRow = (from.row + to.row) / 2;
+        const capturedCol = (from.col + to.col) / 2;
+        newBoard[capturedRow][capturedCol] = null;
+        notation += 'x' + toNotation(to.row, to.col);
+      } else {
+        notation += '-' + toNotation(to.row, to.col);
+      }
+      
+      // King promotion
+      if (piece.color === RED && to.row === 0) {
+        piece.isKing = true;
+      } else if (piece.color === BLACK && to.row === 7) {
+        piece.isKing = true;
+      }
+      
+      newBoard[to.row][to.col] = piece;
+      
+      // Handle multi-jumps
+      if (aiMove.isCapture) {
+        let additionalJumps = getAdditionalJumps(newBoard, to.row, to.col, player);
+        while (additionalJumps.length > 0) {
+          const nextJump = additionalJumps[0];
+          const jumpFrom = currentPos;
+          
+          newBoard[jumpFrom.row][jumpFrom.col] = null;
+          newBoard[nextJump.capturedRow][nextJump.capturedCol] = null;
+          
+          // Check for promotion during multi-jump
+          if (piece.color === RED && nextJump.toRow === 0) {
+            piece.isKing = true;
+          } else if (piece.color === BLACK && nextJump.toRow === 7) {
+            piece.isKing = true;
+          }
+          
+          newBoard[nextJump.toRow][nextJump.toCol] = piece;
+          notation += 'x' + toNotation(nextJump.toRow, nextJump.toCol);
+          currentPos = { row: nextJump.toRow, col: nextJump.toCol };
+          
+          additionalJumps = getAdditionalJumps(newBoard, nextJump.toRow, nextJump.toCol, player);
+        }
+      }
+      
+      // Update state
+      setBoard(newBoard);
+      setMoveHistory(prev => [...prev, {
+        player,
+        notation,
+        from: { row: from.row, col: from.col },
+        to: currentPos
+      }]);
+      
+      const nextPlayer = getOpponent(player);
+      if (!checkGameEnd(newBoard, nextPlayer)) {
+        setCurrentPlayer(nextPlayer);
+      }
+      
+      setAiThinking(false);
+    }, 500);
+  }, [aiDifficulty, checkGameEnd]);
+
+  // AI turn effect
+  useEffect(() => {
+    if (aiEnabled && currentPlayer === BLACK && gameStatus === 'playing' && !aiThinking) {
+      executeAIMove(board, BLACK);
+    }
+    
+    return () => {
+      if (aiTimeoutRef.current) {
+        clearTimeout(aiTimeoutRef.current);
+      }
+    };
+  }, [aiEnabled, currentPlayer, gameStatus, board, aiThinking, executeAIMove]);
+
   // Handle piece selection
   const selectPiece = useCallback((row, col) => {
     if (gameStatus !== 'playing') return;
+    if (aiEnabled && currentPlayer === BLACK) return; // Can't select during AI turn
 
     const piece = board[row][col];
 
-    // If a jump is in progress, only allow selecting the jumping piece
     if (jumpInProgress) {
       if (row === jumpInProgress.row && col === jumpInProgress.col) {
         setSelectedPiece({ row, col });
@@ -238,12 +385,9 @@ export const useCheckers = () => {
       return;
     }
 
-    // Check if clicking on own piece
     if (belongsTo(piece, currentPlayer)) {
       const mustJump = hasAnyJump(board, currentPlayer);
       const moves = getPossibleMoves(board, row, col, currentPlayer, mustJump);
-
-      // Filter to only jumps if jumps are available
       const filteredMoves = mustJump ? moves.filter(m => m.isJump) : moves;
 
       if (filteredMoves.length > 0) {
@@ -254,62 +398,55 @@ export const useCheckers = () => {
         setValidMoves([]);
       }
     }
-  }, [board, currentPlayer, gameStatus, jumpInProgress]);
+  }, [board, currentPlayer, gameStatus, jumpInProgress, aiEnabled]);
 
   // Handle move execution
   const makeMove = useCallback((toRow, toCol) => {
     if (!selectedPiece || gameStatus !== 'playing') return;
+    if (aiEnabled && currentPlayer === BLACK) return;
 
     const move = validMoves.find(m => m.toRow === toRow && m.toCol === toCol);
     if (!move) return;
 
     const { row: fromRow, col: fromCol } = selectedPiece;
-    const newBoard = board.map(r => [...r]);
-    let piece = newBoard[fromRow][fromCol];
+    const newBoard = board.map(r => r.map(c => c ? { ...c } : null));
+    let piece = { ...newBoard[fromRow][fromCol] };
 
-    // Move the piece
-    newBoard[fromRow][fromCol] = EMPTY;
+    newBoard[fromRow][fromCol] = null;
 
-    // Check for king promotion
-    if (piece === RED && toRow === 0) {
-      piece = RED_KING;
-    } else if (piece === BLACK && toRow === 7) {
-      piece = BLACK_KING;
+    // King promotion
+    if (piece.color === RED && toRow === 0) {
+      piece.isKing = true;
+    } else if (piece.color === BLACK && toRow === 7) {
+      piece.isKing = true;
     }
 
     newBoard[toRow][toCol] = piece;
 
-    // Handle capture
     if (move.isJump) {
-      newBoard[move.capturedRow][move.capturedCol] = EMPTY;
+      newBoard[move.capturedRow][move.capturedCol] = null;
     }
 
-    // Record the move
     const moveNotation = `${toNotation(fromRow, fromCol)}${move.isJump ? 'x' : '-'}${toNotation(toRow, toCol)}`;
 
     setBoard(newBoard);
 
-    // Check for additional jumps
     if (move.isJump) {
       const additionalJumps = getAdditionalJumps(newBoard, toRow, toCol, currentPlayer);
       if (additionalJumps.length > 0) {
-        // Continue the multi-jump
         setSelectedPiece({ row: toRow, col: toCol });
         setValidMoves(additionalJumps);
         setJumpInProgress({ row: toRow, col: toCol });
 
-        // Update move history for partial jump
         setMoveHistory(prev => {
           const newHistory = [...prev];
           if (jumpInProgress) {
-            // Append to existing jump sequence
             const lastMove = newHistory[newHistory.length - 1];
             newHistory[newHistory.length - 1] = {
               ...lastMove,
               notation: lastMove.notation + `x${toNotation(toRow, toCol)}`
             };
           } else {
-            // Start new jump sequence
             newHistory.push({
               player: currentPlayer,
               notation: moveNotation,
@@ -323,11 +460,9 @@ export const useCheckers = () => {
       }
     }
 
-    // Complete the move
     setMoveHistory(prev => {
       const newHistory = [...prev];
       if (jumpInProgress) {
-        // Complete multi-jump
         const lastMove = newHistory[newHistory.length - 1];
         newHistory[newHistory.length - 1] = {
           ...lastMove,
@@ -353,13 +488,13 @@ export const useCheckers = () => {
     if (!checkGameEnd(newBoard, nextPlayer)) {
       setCurrentPlayer(nextPlayer);
     }
-  }, [board, currentPlayer, selectedPiece, validMoves, gameStatus, jumpInProgress, checkGameEnd]);
+  }, [board, currentPlayer, selectedPiece, validMoves, gameStatus, jumpInProgress, checkGameEnd, aiEnabled]);
 
-  // Handle cell click (either select piece or make move)
+  // Handle cell click
   const handleCellClick = useCallback((row, col) => {
     if (gameStatus !== 'playing') return;
+    if (aiEnabled && currentPlayer === BLACK) return;
 
-    // Check if this is a valid move destination
     const isValidMoveTarget = validMoves.some(m => m.toRow === row && m.toCol === col);
 
     if (isValidMoveTarget) {
@@ -367,10 +502,13 @@ export const useCheckers = () => {
     } else {
       selectPiece(row, col);
     }
-  }, [gameStatus, validMoves, makeMove, selectPiece]);
+  }, [gameStatus, validMoves, makeMove, selectPiece, aiEnabled, currentPlayer]);
 
   // Reset the game
   const resetGame = useCallback(() => {
+    if (aiTimeoutRef.current) {
+      clearTimeout(aiTimeoutRef.current);
+    }
     setBoard(createInitialBoard());
     setCurrentPlayer(RED);
     setSelectedPiece(null);
@@ -380,6 +518,20 @@ export const useCheckers = () => {
     setJumpInProgress(null);
     setRedPieces(12);
     setBlackPieces(12);
+    setAiThinking(false);
+  }, []);
+
+  // Toggle AI
+  const toggleAI = useCallback((enabled) => {
+    setAiEnabled(enabled);
+    if (enabled) {
+      resetGame();
+    }
+  }, [resetGame]);
+
+  // Set difficulty
+  const setDifficulty = useCallback((difficulty) => {
+    setAiDifficulty(difficulty);
   }, []);
 
   return {
@@ -393,6 +545,12 @@ export const useCheckers = () => {
     blackPieces,
     handleCellClick,
     resetGame,
+    // AI props
+    aiEnabled,
+    aiDifficulty,
+    aiThinking,
+    toggleAI,
+    setDifficulty,
     RED,
     BLACK,
     RED_KING,
