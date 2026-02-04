@@ -206,6 +206,7 @@ export const useCheckers = () => {
   const [aiThinking, setAiThinking] = useState(false);
   
   const aiTimeoutRef = useRef(null);
+  const aiThinkingRef = useRef(false);
 
   const checkGameEnd = useCallback((newBoard, nextPlayer) => {
     const moves = getAllValidMoves(newBoard, nextPlayer);
@@ -231,18 +232,18 @@ export const useCheckers = () => {
   }, []);
 
   // AI turn effect - triggers when it's black's turn and AI is enabled
+  // Uses ref for thinking guard to avoid cleanup killing the timeout
   useEffect(() => {
-    // Clear any pending timeout
-    if (aiTimeoutRef.current) {
-      clearTimeout(aiTimeoutRef.current);
-      aiTimeoutRef.current = null;
-    }
-
-    // Check if AI should move
-    if (!aiEnabled || currentPlayer !== BLACK || gameStatus !== 'playing' || aiThinking) {
+    if (!aiEnabled || currentPlayer !== BLACK || gameStatus !== 'playing') {
       return;
     }
-
+    
+    // Guard against double-fire using ref (not state, to avoid re-render loop)
+    if (aiThinkingRef.current) {
+      return;
+    }
+    
+    aiThinkingRef.current = true;
     setAiThinking(true);
 
     aiTimeoutRef.current = setTimeout(() => {
@@ -256,6 +257,7 @@ export const useCheckers = () => {
       );
 
       if (!aiMove) {
+        aiThinkingRef.current = false;
         setAiThinking(false);
         return;
       }
@@ -334,15 +336,10 @@ export const useCheckers = () => {
         setCurrentPlayer(RED);
       }
       
+      aiThinkingRef.current = false;
       setAiThinking(false);
     }, 700);
-
-    return () => {
-      if (aiTimeoutRef.current) {
-        clearTimeout(aiTimeoutRef.current);
-      }
-    };
-  }, [aiEnabled, currentPlayer, gameStatus, aiThinking, board, aiDifficulty]);
+  }, [aiEnabled, currentPlayer, gameStatus, board, aiDifficulty]);
 
   const selectPiece = useCallback((row, col) => {
     if (gameStatus !== 'playing') return;
@@ -476,7 +473,9 @@ export const useCheckers = () => {
   const resetGame = useCallback(() => {
     if (aiTimeoutRef.current) {
       clearTimeout(aiTimeoutRef.current);
+      aiTimeoutRef.current = null;
     }
+    aiThinkingRef.current = false;
     setBoard(createInitialBoard());
     setCurrentPlayer(RED);
     setSelectedPiece(null);
@@ -492,10 +491,11 @@ export const useCheckers = () => {
   const toggleAI = useCallback((enabled) => {
     if (aiTimeoutRef.current) {
       clearTimeout(aiTimeoutRef.current);
+      aiTimeoutRef.current = null;
     }
+    aiThinkingRef.current = false;
     setAiThinking(false);
     setAiEnabled(enabled);
-    // Reset game when toggling
     setBoard(createInitialBoard());
     setCurrentPlayer(RED);
     setSelectedPiece(null);
